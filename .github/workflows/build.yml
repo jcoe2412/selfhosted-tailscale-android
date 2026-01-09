@@ -1,99 +1,40 @@
-name: Build Custom Tailscale APK
+name: Build Tailscale for Headscale (Simple)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ master, main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     
     steps:
-    - name: Checkout selfhosted builder
+    - name: Checkout Tailscale Android
       uses: actions/checkout@v4
-      
-    - name: Set up Go (system Go for initial setup)
-      uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        repository: tailscale/tailscale-android
+        submodules: recursive
         
-    - name: Set up JDK 17
+    - name: Set up JDK
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
     
-    - name: Install Android SDK
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      
+    - name: Set custom control server via environment
       run: |
-        mkdir -p $HOME/android-sdk
-        cd $HOME/android-sdk
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-        unzip -q commandlinetools-linux-11076708_latest.zip
-        mkdir -p cmdline-tools/latest
-        mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-        export ANDROID_HOME=$HOME/android-sdk
-        export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-        yes | sdkmanager --licenses || true
-        sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
-    
-    - name: Set environment variables
+        echo "TS_CONTROL_URL=${{ secrets.HEADSCALE_URL }}" >> $GITHUB_ENV
+        
+    - name: Build Debug APK (easiest)
+      working-directory: android
       run: |
-        echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-        echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
-        echo "PATH=$PATH:$HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools" >> $GITHUB_ENV
-    
-    - name: Pre-download Tailscale Go toolchain
-      run: |
-        # Clone the upstream repo first to get the version
-        git clone --depth 1 https://github.com/tailscale/tailscale-android.git temp-clone
-        cd temp-clone
+        chmod +x gradlew
+        ./gradlew assembleDebug
         
-        # Get the required Go toolchain version
-        TOOLCHAIN_REV=$(grep 'GoToolchainRev' -A1 go.toolchain.rev | tail -n1 | tr -d '\n' || echo "")
-        
-        if [ -z "$TOOLCHAIN_REV" ]; then
-          # Fallback: try to extract from VERSION.txt or use a known working version
-          TOOLCHAIN_REV="710a0d861098c07540ad073bb73a42ce81bf54a8"
-        fi
-        
-        echo "Using Go toolchain revision: $TOOLCHAIN_REV"
-        
-        # Download and extract the custom Go toolchain
-        mkdir -p $HOME/.cache/tailscale-android-go-$TOOLCHAIN_REV
-        cd $HOME/.cache/tailscale-android-go-$TOOLCHAIN_REV
-        
-        # Try downloading from Tailscale's releases
-        wget -O go.tar.gz "https://github.com/tailscale/go/releases/download/build-${TOOLCHAIN_REV}/linux.tar.gz" || \
-        wget -O go.tar.gz "https://go.dev/dl/go1.23.4.linux-amd64.tar.gz"
-        
-        tar -xzf go.tar.gz
-        
-        cd $GITHUB_WORKSPACE
-        rm -rf temp-clone
-        
-    - name: Build APK
-      env:
-        TAILSCALE_CONTROL_SERVER: ${{ secrets.HEADSCALE_URL }}
-      run: |
-        export ANDROID_HOME=$HOME/android-sdk
-        export ANDROID_SDK_ROOT=$HOME/android-sdk
-        export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
-        
-        # Run the build
-        make || {
-          echo "Build failed, checking for errors..."
-          ls -la
-          exit 1
-        }
-        
-    - name: Find and upload APK
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: tailscale-headscale
-        path: |
-          tailscale-android/android/build/outputs/apk/**/*.apk
-          upstream/android/build/outputs/apk/**/*.apk
-        if-no-files-found: error
-        retention-days: 30
+        name: tailscale-debug-apk
+        path: android/build/outputs/apk/debug/*.apk
